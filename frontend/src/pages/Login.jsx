@@ -10,7 +10,7 @@ const Login = () => {
       {/* Left Side Image */}
       <div className="w-1/2 hidden md:block">
         <img
-          src="https://s3.zeelool.com/admin/product/group/cca5c1942d0476d07a9db831b7cdddd8.jpg"
+          src="https://tse3.mm.bing.net/th/id/OIP.rksBkhr4mKJhIt_1XoXrLgHaHa?r=0&rs=1&pid=ImgDetMain&o=7&rm=3"
           alt="Background"
           className="h-screen w-full object-fill"
         />
