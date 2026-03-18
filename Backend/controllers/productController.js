@@ -3,6 +3,7 @@ const Product = require('../models/Product.js');
 const Notification = require("../models/Notification.js");
 const { uploadImagesToCloudinary } = require('./imagecontroller.js');
 const mongoose = require("mongoose");
+const { generateEmbeddings } = require("../controllers/chatController.js");
 
 const fs = require("fs");
 const csv = require("csv-parser");
@@ -38,10 +39,10 @@ const mapRowToProduct = (row) => {
     brand: String(row.brand || ""),
 
     gstRate: Number(row.gstRate || 12),
-    
+
     images,
 
-    isDeleted: false
+    isDeleted: false,
   };
 };
 const validateProduct = (p) => {
@@ -59,7 +60,7 @@ const parseCSV = (filePath) => {
     fs.createReadStream(filePath)
       .pipe(csv({ skipEmptyLines: true }))
       .on("data", (row) => {
-        products.push(mapRowToProduct(row)); // ✅ key change
+        products.push(mapRowToProduct(row));
       })
       .on("end", () => resolve(products))
       .on("error", reject);
@@ -70,10 +71,10 @@ const parseExcel = (filePath) => {
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(sheet);
 
-  return rows.map(mapRowToProduct); // ✅ key change
+  return rows.map(mapRowToProduct);
 };
 
-// ✅ Multer setup
+// Multer setup
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
@@ -84,7 +85,7 @@ exports.bulkUploadMiddleware = uploadFile.single("file");
 exports.uploadMiddleware = upload.array('images', 5); // max 5 images
 
 // ===============================
-// 📦 Add Product Controller
+// Add Product Controller
 // ===============================
 exports.addProduct = async (req, res) => {
   try {
@@ -133,6 +134,11 @@ exports.addProduct = async (req, res) => {
       gstRate,
       lowStockAlert,
     });
+
+    // Generate embedding for the new product
+    const productText = `${product.title} ${product.discountPrice} ${product.productType} ${product.category} ${product.brand}`;
+    const embedding = await generateEmbeddings(productText);
+    await Product.findByIdAndUpdate(product._id, { embedding });
 
     // ⚠️ Create low-stock notification automatically
     if (product.stock <= (product.lowStockAlert || 5)) {
@@ -186,7 +192,23 @@ exports.addbulkProduct = async (req, res) => {
     }
 
     // 3️⃣ Insert
-    await Product.insertMany(validProducts, { ordered: false });
+    const insertResult = await Product.insertMany(validProducts, { ordered: false });
+
+    // Embeddings
+    // Build texts array
+    const texts = insertResult.map(p =>
+      `${p.title} ${p.discountPrice} ${p.productType} ${p.category} ${p.brand}`.trim()
+    );
+    const embeddings = await generateEmbeddings(texts); // chunking handled inside
+
+    await Product.bulkWrite(
+      insertResult.map((p, i) => ({
+        updateOne: {
+          filter: { _id: p._id },
+          update: { $set: { embedding: embeddings[i] } }
+        }
+      }))
+    );
 
     // 4️⃣ Cleanup
     fs.unlinkSync(req.file.path);
@@ -240,6 +262,11 @@ exports.updateProductById = async (req, res) => {
       { new: true, runValidators: true }
     );
 
+    // Generate embedding for the new product
+    const productText = `${updatedProduct.title} ${updatedProduct.discountPrice} ${updatedProduct.productType} ${updatedProduct.category} ${updatedProduct.brand}`;
+    const embedding = await generateEmbeddings(productText);
+    await Product.findByIdAndUpdate(updatedProduct._id, { embedding });
+
     if (!updatedProduct) {
       return res.status(404).json({
         success: false,
@@ -274,7 +301,7 @@ exports.getProductById = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid product ID" });
     }
 
-    const product = await Product.findById(id);
+    const product = await Product.findById(id).select('-embedding');
 
     if (!product || product.isDeleted) {
       return res.status(404).json({ success: false, message: "Product not found" });
@@ -311,7 +338,7 @@ exports.searchProducts = async (req, res) => {
         { title: { $regex: query, $options: "i" } },
         { description: { $regex: query, $options: "i" } }
       ]
-    });
+    }).select('-embedding');
 
     res.status(200).json({
       success: true,
@@ -339,7 +366,7 @@ exports.getProductsByRange = async (req, res) => {
     const products = await Product.find({
       isDeleted: false,
       price: { $gte: minPrice, $lte: maxPrice }
-    });
+    },{ embedding: 0 });
 
     res.status(200).json({
       success: true,
@@ -460,7 +487,7 @@ exports.getSortedProducts = async (req, res) => {
       { $sort: { priceNum: sortOrder } },
 
       // Remove helper fields before sending response
-      { $project: { _priceMatch: 0, priceNum: 0 } }
+      { $project: { _priceMatch: 0, priceNum: 0, embedding: 0 } }
     ]);
 
     // Return sorted products
@@ -489,7 +516,7 @@ exports.getSortedProducts = async (req, res) => {
 // ===============================
 exports.getTrendingProducts = async (req, res) => {
   try {
-    const products = await Product.find({ isDeleted: false })
+    const products = await Product.find({ isDeleted: false }).select('-embedding')
       .sort({ createdAt: -1 })
       .limit(20);
 
@@ -504,7 +531,7 @@ exports.getTrendingProducts = async (req, res) => {
 // ===============================
 exports.getBestRatingProducts = async (req, res) => {
   try {
-    const products = await Product.find({ isDeleted: false })
+    const products = await Product.find({ isDeleted: false }).select('-embedding')
       .sort({ rating: -1 })
       .limit(20);
 
@@ -520,7 +547,7 @@ exports.getBestRatingProducts = async (req, res) => {
 // ===============================
 exports.getBestSellerProducts = async (req, res) => {
   try {
-    const products = await Product.find({ isDeleted: false })
+    const products = await Product.find({ isDeleted: false }).select('-embedding')
       .sort({ numOfReviews: -1 }) // assuming reviews count = popularity
       .limit(20);
 
@@ -540,7 +567,7 @@ exports.getDiscountProducts = async (req, res) => {
       isDeleted: false,
       $expr: { $lt: ["$discountPrice", "$price"] },
       discountPrice: { $gt: 0 }
-    });
+    }).select('-embedding');
 
     res.status(200).json({ success: true, count: products.length, products });
   } catch (error) {
@@ -562,7 +589,7 @@ exports.filterProductsByPrice = async (req, res) => {
     // Fetch products in the range
     const products = await Product.find({
       discountPrice: { $gte: min, $lte: max },
-    });
+    }).select('-embedding');
 
     // Return in object format so frontend can do response.data.products
     res.status(200).json({ products });
@@ -578,7 +605,7 @@ exports.filterProductsByPrice = async (req, res) => {
 // Get all products
 exports.getAllProducts = async (req, res) => {
   try {
-    const products = await Product.find();
+    const products = await Product.find().select('-embedding');
     res.status(200).json({ products });
   } catch (error) {
     console.error("Error fetching all products:", error);
@@ -589,7 +616,7 @@ exports.getAllProducts = async (req, res) => {
 exports.getProductsByCategory = async (req, res) => {
   try {
     const category = req.params.category;
-    const products = await Product.find({ category: category });
+    const products = await Product.find({ category: category },{ embedding: 0 });
     res.json({ products });
   } catch (err) {
     res.status(500).json({ error: "Failed to fetch products" });
@@ -623,5 +650,4 @@ exports.deleteMultipleProducts = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
-
 

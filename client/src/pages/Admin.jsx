@@ -7,6 +7,7 @@ import {
   updateProductById,
   deleteMultipleProducts,
   deleteAllProducts,
+  fetchProducts_withembed,
 } from "../api/productApi";
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -14,6 +15,7 @@ import { FaEdit, FaTrash, FaSave, FaTimes } from "react-icons/fa";
 import { LayoutDashboard, PackagePlus, ChevronDown } from "lucide-react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
+import { embed_all_Products } from "../api/chatApi";
 
 const Admin = () => {
   const initialFormState = {
@@ -39,6 +41,8 @@ const Admin = () => {
   const [deleteConfirmId, setDeleteConfirmId] = useState(null);
   const [expandedId, setExpandedId] = useState(null);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [loadingProducts, setLoadingProducts] = useState(true);
+  const [embedResult, setEmbedResult] = useState();
 
   // ── Selection state ──────────────────────────────────────────────────────────
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -53,23 +57,24 @@ const Admin = () => {
   const [bulkPreview, setBulkPreview] = useState([]);
   const [bulkHeaders, setBulkHeaders] = useState([]);
   const [showPreview, setShowPreview] = useState(false);
+  const [isEmbedloading, setIsEmbedloading] = useState(false);
 
   // ── Load products ────────────────────────────────────────────────────────────
   const loadProducts = async () => {
     try {
-      const data = await fetchProducts();
-      setProducts(
-        data.products.map((p) => ({ ...p, imagePreviews: p.images || [] }))
-      );
+      setLoadingProducts(true); // 👈 add this
+      const data = await fetchProducts_withembed();
+      setProducts(data.products.map((p) => ({ ...p, imagePreviews: p.images || [] })));
       const lowStock = data.products.filter((p) => p.stock <= p.lowStockAlert);
       if (lowStock.length > 0) {
         toast.warning(`${lowStock.length} product(s) are low on stock!`, {
-          toastId: "low-stock-warning",
-          autoClose: 2000,
+          toastId: "low-stock-warning", autoClose: 2000,
         });
       }
     } catch {
       toast.error("Failed to load products");
+    } finally {
+      setLoadingProducts(false); // 👈 add this
     }
   };
 
@@ -260,6 +265,19 @@ const Admin = () => {
     setEditableValues({});
   };
 
+  const handleEmbed = async () => {
+    setIsEmbedloading(true);
+    try {
+      const response = await embed_all_Products();
+      setEmbedResult(response.message.message);
+      toast.success(embedResult);
+    }
+    catch (err) {
+      toast.error(embedResult)
+    }
+    setIsEmbedloading(false);
+  }
+
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-gray-100 p-4 sm:p-6 text-sm">
@@ -404,6 +422,14 @@ const Admin = () => {
             <span className="ml-2 text-sm text-gray-400 font-normal">
               ({products.length} total)
             </span>
+            <div className="my-2 text-[15px]">
+              <button onClick={handleEmbed}
+              disabled={isEmbedloading}
+              className={`flex items-center gap-2 px-2 py-1 hover:cursor-pointer rounded ${isEmbedloading ? "bg-blue-500 cursor-not-allowed text-white" : "bg-blue-500 hover:bg-blue-700 text-white"}`}
+              >
+                {isEmbedloading ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />Embedding…</> : "Enbedded All"}
+              </button>
+            </div>
           </h2>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -474,15 +500,33 @@ const Admin = () => {
           </div>
         </div>
 
-        {products.length === 0 ? (
+        {loadingProducts ? (
+          // Skeleton
+          <div className="space-y-3">
+            {[1, 2, 3, 4, 5].map((i) => (
+              <div key={i} className="bg-white rounded-xl shadow-md p-4 flex items-center gap-4">
+                <div className="w-4 h-4 bg-gray-200 animate-pulse rounded" />
+                <div className="flex gap-2">
+                  <div className="w-12 h-12 bg-gray-200 animate-pulse rounded" />
+                  <div className="w-12 h-12 bg-gray-200 animate-pulse rounded" />
+                </div>
+                <div className="flex-1 space-y-2">
+                  <div className="h-4 w-1/3 bg-gray-200 animate-pulse rounded" />
+                  <div className="h-3 w-1/4 bg-gray-200 animate-pulse rounded" />
+                </div>
+                <div className="w-16 h-6 bg-gray-200 animate-pulse rounded-full" />
+                <div className="w-8 h-8 bg-gray-200 animate-pulse rounded" />
+              </div>
+            ))}
+          </div>
+        ) : products.length === 0 ? (
           <p className="text-gray-500">No products added yet.</p>
         ) : (
           products.map((p) => (
             <div
               key={p._id}
-              className={`bg-white mb-3 rounded-xl shadow-md overflow-hidden border-2 transition-colors duration-200 ${
-                selectedIds.has(p._id) ? "border-blue-400" : "border-transparent"
-              }`}
+              className={`bg-white mb-3 rounded-xl shadow-md overflow-hidden border-2 transition-colors duration-200 ${selectedIds.has(p._id) ? "border-blue-400" : "border-transparent"
+                }`}
             >
               <details
                 onToggle={(e) => {
@@ -512,11 +556,17 @@ const Admin = () => {
                     <p className="font-semibold text-gray-800 truncate">{p.title}</p>
                     <p className="text-xs text-gray-400">#{p._id.toString().slice(-6)}</p>
                   </div>
-
+                  {/* Embed Status */}
+                  <span>
+                    {p.embedding? (
+                      <p className="text-xs font-semibold px-3 py-1 rounded-full flex-shrink-0 bg-blue-200 text-black">embedded</p>
+                    ) : (
+                      <p className="text-xs font-semibold px-3 py-1 rounded-full flex-shrink-0 bg-red-200 text-black">No Embed</p>
+                    )}
+                  </span>
                   {/* Stock badge */}
-                  <span className={`text-xs font-semibold px-2 py-1 rounded-full flex-shrink-0 ${
-                    p.stock <= p.lowStockAlert ? "bg-red-100 text-red-600" : "bg-green-100 text-green-600"
-                  }`}>
+                  <span className={`text-xs font-semibold px-2 py-1 rounded-full flex-shrink-0 ${p.stock <= p.lowStockAlert ? "bg-red-100 text-red-600" : "bg-green-100 text-green-600"
+                    }`}>
                     Stock: {p.stock}
                   </span>
 
